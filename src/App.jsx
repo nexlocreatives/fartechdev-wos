@@ -1556,17 +1556,6 @@ function FilesView({ profile }) {
   );
 }
 
-function SettingsView() {
-  return (
-    <div>
-      <SectionTitle>Settings</SectionTitle>
-      <Card style={{ padding: 22, maxWidth: 560 }}>
-        <div style={{ fontSize: 12.5, color: T.textFaint }}>Platform-wide settings (support email, default currency, SOP version) — wire to a `settings` key/value table when needed.</div>
-      </Card>
-    </div>
-  );
-}
-
 /* ---------------------------------- Root App ---------------------------------- */
 
 function AppShell({ profile, refreshProfile }) {
