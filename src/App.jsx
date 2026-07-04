@@ -7,7 +7,7 @@ import {
   Download, Upload, CheckCheck, MoreHorizontal, LayoutGrid,
   ListChecks, Video, UserPlus, TrendingUp, Wallet, FileCheck2, PackageCheck, Home, Loader2,
 } from "lucide-react";
-import { supabase } from "./lib/supabaseClient";
+import { supabase, callEdgeFunction } from "./lib/supabaseClient";
 import { useSession, signOut } from "./lib/useSession";
 import { navFor, channelsFor, isAdminLevel, roleLabel, CHANNEL_LABEL } from "./lib/roles";
 
@@ -292,8 +292,8 @@ function AgencyOnboardingFlow({ profile, onFinished }) {
   async function inviteTeammate() {
     if (!teamEmail.trim()) return;
     setBusy(true); setErr(null);
-    const { error } = await supabase.functions.invoke("invite-agency-user", {
-      body: { email: teamEmail, fullName: teamEmail, agencyId: profile.agency_id, agencyRole: "manager" },
+    const { error } = await callEdgeFunction("invite-agency-user", {
+      email: teamEmail, fullName: teamEmail, agencyId: profile.agency_id, agencyRole: "manager",
     });
     setBusy(false);
     if (error) { setErr(error.message); return; }
@@ -572,8 +572,8 @@ function NewAgencyForm({ onClose, onCreated }) {
     const { data: agency, error: agencyErr } = await supabase.from("agencies").insert({ ...form, slug }).select().single();
     if (agencyErr) { setErr(agencyErr.message); setBusy(false); return; }
 
-    const { error: inviteErr } = await supabase.functions.invoke("invite-agency-user", {
-      body: { email: form.email, fullName: form.contact_person, agencyId: agency.id, agencyRole: "owner" },
+    const { error: inviteErr } = await callEdgeFunction("invite-agency-user", {
+      email: form.email, fullName: form.contact_person, agencyId: agency.id, agencyRole: "owner",
     });
     setBusy(false);
     if (inviteErr) { setErr(`Agency created, but invite failed: ${inviteErr.message}`); return; }
@@ -1207,7 +1207,7 @@ function InviteEmployeeForm({ onClose, onInvited }) {
 
   async function invite() {
     setBusy(true); setErr(null);
-    const { error } = await supabase.functions.invoke("invite-team-member", { body: form });
+    const { error } = await callEdgeFunction("invite-team-member", form);
     setBusy(false);
     if (error) { setErr(error.message); return; }
     onInvited(); onClose();
