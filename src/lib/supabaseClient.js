@@ -1,0 +1,14 @@
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  // Fails loudly in dev if .env.local is missing, instead of silently
+  // breaking every Supabase call later.
+  console.error(
+    'Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Copy .env.local.example to .env.local and fill in your Supabase project values.'
+  );
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
