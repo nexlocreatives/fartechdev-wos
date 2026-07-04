@@ -1199,67 +1199,261 @@ function MeetingsView({ profile }) {
   );
 }
 
-function InviteEmployeeForm({ onClose, onInvited }) {
-  const [form, setForm] = useState({ email: "", fullName: "", farTechRole: "developer", department: "" });
+function PasswordInput({ value, onChange, placeholder }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <input style={{ ...inputStyle, paddingRight: 36 }} type={show ? "text" : "password"} value={value} onChange={onChange} placeholder={placeholder} />
+      <div onClick={() => setShow(!show)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", cursor: "pointer", color: T.textFaint, fontSize: 11 }}>{show ? "Hide" : "Show"}</div>
+    </div>
+  );
+}
+
+function generatePassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%";
+  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+}
+
+function AddEmployeeForm({ onCreated }) {
+  const [form, setForm] = useState({ fullName: "", farTechRole: "developer", email: "", department: "", password: generatePassword() });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [success, setSuccess] = useState(null);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
-  async function invite() {
-    setBusy(true); setErr(null);
-    const { error } = await callEdgeFunction("invite-team-member", form);
+  async function submit() {
+    setBusy(true); setErr(null); setSuccess(null);
+    const { error } = await callEdgeFunction("create-team-member", form);
     setBusy(false);
     if (error) { setErr(error.message); return; }
-    onInvited(); onClose();
+    setSuccess(`Account created. Share these credentials with ${form.fullName}: ${form.email} / ${form.password}`);
+    setForm({ fullName: "", farTechRole: "developer", email: "", department: "", password: generatePassword() });
+    onCreated();
   }
 
   return (
-    <Card style={{ padding: 18, marginBottom: 16 }}>
-      <SectionTitle action={<X size={17} color={T.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />}>Invite a FAR Tech employee</SectionTitle>
-      <ErrorBox message={err} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={set("fullName")} /></Field>
-        <Field label="Email"><input style={inputStyle} type="email" value={form.email} onChange={set("email")} /></Field>
-        <Field label="Permission level">
-          <select style={inputStyle} value={form.farTechRole} onChange={set("farTechRole")}>
-            <option value="admin">Admin</option>
-            <option value="project_manager">Project Manager</option>
-            <option value="team_lead">Team Lead</option>
-            <option value="developer">Developer</option>
-          </select>
-        </Field>
-        <Field label="Department / title (optional)"><input style={inputStyle} value={form.department} onChange={set("department")} placeholder="e.g. QA Engineer, Sales, HR" /></Field>
+    <Card style={{ padding: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <UserPlus size={16} color={T.iceMid} />
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 700, color: T.text }}>Add New Employee</div>
       </div>
-      <Button icon={UserPlus} onClick={invite} disabled={busy || !form.email || !form.fullName}>{busy ? "Sending invite…" : "Send invite"}</Button>
+      <div style={{ fontSize: 12, color: T.textFaint, marginBottom: 16 }}>Creates a login immediately — no invite email. Share the credentials yourself.</div>
+      <ErrorBox message={err} />
+      {success && <div style={{ padding: 12, borderRadius: 9, background: T.green + "14", border: `1px solid ${T.green}33`, color: T.green, fontSize: 12, marginBottom: 14, wordBreak: "break-word" }}>{success}</div>}
+
+      <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={set("fullName")} placeholder="e.g. Bilal Ahmed" /></Field>
+      <Field label="Permission level">
+        <select style={inputStyle} value={form.farTechRole} onChange={set("farTechRole")}>
+          <option value="admin">Admin</option>
+          <option value="project_manager">Project Manager</option>
+          <option value="team_lead">Team Lead</option>
+          <option value="developer">Developer</option>
+        </select>
+      </Field>
+      <Field label="Department / title (optional)"><input style={inputStyle} value={form.department} onChange={set("department")} placeholder="e.g. QA Engineer, Sales, HR" /></Field>
+      <Field label="Login email"><input style={inputStyle} type="email" value={form.email} onChange={set("email")} placeholder="name@fartechdev.com" /></Field>
+      <Field label="Password">
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><PasswordInput value={form.password} onChange={set("password")} placeholder="Set a strong password" /></div>
+          <Button variant="subtle" onClick={() => setForm({ ...form, password: generatePassword() })}>Generate</Button>
+        </div>
+        <div style={{ fontSize: 11, color: T.textFaint, marginTop: 4 }}>Share these credentials with the employee for login access.</div>
+      </Field>
+
+      <Button icon={UserPlus} onClick={submit} disabled={busy || !form.fullName || !form.email || form.password.length < 8} style={{ width: "100%", justifyContent: "center" }}>
+        {busy ? "Creating…" : "Add Employee"}
+      </Button>
     </Card>
   );
 }
 
-function EmployeesView() {
+function CurrentTeamList({ team, onChanged }) {
+  const [busyId, setBusyId] = useState(null);
+
+  async function remove(t) {
+    if (!window.confirm(`Remove ${t.full_name}'s account? This can't be undone.`)) return;
+    setBusyId(t.id);
+    const { error } = await callEdgeFunction("delete-team-member", { targetUserId: t.id });
+    setBusyId(null);
+    if (error) { alert(error.message); return; }
+    onChanged();
+  }
+
+  return (
+    <Card style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.borderSoft}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 700, color: T.text }}>Current Team</div>
+        <Pill color={T.iceMid}>{team.length} members</Pill>
+      </div>
+      <div>
+        {team.map(t => {
+          const protectedRow = t.far_tech_role === "super_admin";
+          return (
+            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${T.borderSoft}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <Avatar name={t.full_name} size={36} />
+                <div>
+                  <div style={{ fontSize: 13.3, fontWeight: 600, color: T.text }}>{t.full_name}</div>
+                  <div style={{ fontSize: 11.5, color: T.textFaint }}>{t.email}</div>
+                  <Pill color={T.violet}>{roleLabel(t)}</Pill>
+                </div>
+              </div>
+              {protectedRow ? (
+                <div style={{ fontSize: 11.5, color: T.textFaint }}>Protected</div>
+              ) : (
+                <Button variant="danger" onClick={() => remove(t)} disabled={busyId === t.id}>{busyId === t.id ? "Removing…" : "Remove"}</Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function EmployeeManagementTab() {
   const [team, setTeam] = useState(null);
-  const [showInvite, setShowInvite] = useState(false);
-  const load = useCallback(() => { supabase.from("profiles").select("*").eq("user_type", "far_tech").then(({ data }) => setTeam(data || [])); }, []);
+  const load = useCallback(() => { supabase.from("profiles").select("*").eq("user_type", "far_tech").order("created_at").then(({ data }) => setTeam(data || [])); }, []);
   useEffect(load, [load]);
   if (!team) return <Spinner />;
   return (
+    <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", gap: 20, alignItems: "start" }}>
+      <AddEmployeeForm onCreated={load} />
+      <CurrentTeamList team={team} onChanged={load} />
+    </div>
+  );
+}
+
+function AddAgencyForm({ onCreated }) {
+  const [form, setForm] = useState({ name: "", contact_person: "", phone: "", time_zone: "UTC", white_label_plan: "starter", email: "", password: generatePassword() });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [success, setSuccess] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  async function submit() {
+    setBusy(true); setErr(null); setSuccess(null);
+    const slug = form.name.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+    const { data: agency, error: agencyErr } = await supabase.from("agencies").insert({
+      name: form.name, slug, contact_person: form.contact_person, phone: form.phone, time_zone: form.time_zone, white_label_plan: form.white_label_plan, email: form.email,
+    }).select().single();
+    if (agencyErr) { setErr(agencyErr.message); setBusy(false); return; }
+
+    const { error: userErr } = await callEdgeFunction("create-agency-user", {
+      email: form.email, fullName: form.contact_person, agencyId: agency.id, agencyRole: "owner", password: form.password,
+    });
+    setBusy(false);
+    if (userErr) { setErr(`Agency created, but account creation failed: ${userErr.message}`); return; }
+    setSuccess(`Agency created. Share these credentials with ${form.contact_person}: ${form.email} / ${form.password}`);
+    setForm({ name: "", contact_person: "", phone: "", time_zone: "UTC", white_label_plan: "starter", email: "", password: generatePassword() });
+    onCreated();
+  }
+
+  return (
+    <Card style={{ padding: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <Building2 size={16} color={T.iceMid} />
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 700, color: T.text }}>Add New Agency</div>
+      </div>
+      <div style={{ fontSize: 12, color: T.textFaint, marginBottom: 16 }}>Creates the agency and its owner login immediately — no invite email.</div>
+      <ErrorBox message={err} />
+      {success && <div style={{ padding: 12, borderRadius: 9, background: T.green + "14", border: `1px solid ${T.green}33`, color: T.green, fontSize: 12, marginBottom: 14, wordBreak: "break-word" }}>{success}</div>}
+
+      <Field label="Agency name"><input style={inputStyle} value={form.name} onChange={set("name")} placeholder="e.g. Skyline Media" /></Field>
+      <Field label="Contact person (becomes the owner login)"><input style={inputStyle} value={form.contact_person} onChange={set("contact_person")} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={set("phone")} /></Field>
+      <Field label="Time zone"><input style={inputStyle} value={form.time_zone} onChange={set("time_zone")} /></Field>
+      <Field label="White-label plan">
+        <select style={inputStyle} value={form.white_label_plan} onChange={set("white_label_plan")}>
+          <option value="starter">Starter</option><option value="growth">Growth</option><option value="enterprise">Enterprise</option>
+        </select>
+      </Field>
+      <Field label="Login email"><input style={inputStyle} type="email" value={form.email} onChange={set("email")} placeholder="owner@agency.com" /></Field>
+      <Field label="Password">
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><PasswordInput value={form.password} onChange={set("password")} /></div>
+          <Button variant="subtle" onClick={() => setForm({ ...form, password: generatePassword() })}>Generate</Button>
+        </div>
+      </Field>
+
+      <Button icon={Building2} onClick={submit} disabled={busy || !form.name || !form.contact_person || !form.email || form.password.length < 8} style={{ width: "100%", justifyContent: "center" }}>
+        {busy ? "Creating…" : "Add Agency"}
+      </Button>
+    </Card>
+  );
+}
+
+function CurrentAgenciesList({ agencies, onChanged }) {
+  async function remove(a) {
+    if (!window.confirm(`Delete ${a.name}? This removes the agency and its data.`)) return;
+    const { error } = await supabase.from("agencies").delete().eq("id", a.id);
+    if (error) { alert(error.message); return; }
+    onChanged();
+  }
+  return (
+    <Card style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.borderSoft}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 700, color: T.text }}>Current Agencies</div>
+        <Pill color={T.iceMid}>{agencies.length} agencies</Pill>
+      </div>
+      <div>
+        {agencies.map(a => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${T.borderSoft}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Avatar name={a.name} size={36} />
+              <div>
+                <div style={{ fontSize: 13.3, fontWeight: 600, color: T.text }}>{a.name}</div>
+                <div style={{ fontSize: 11.5, color: T.textFaint }}>{a.contact_person} · {a.email}</div>
+                <Pill color={a.status === "active" ? T.green : T.amber}>{a.status}</Pill>
+              </div>
+            </div>
+            <Button variant="danger" onClick={() => remove(a)}>Delete</Button>
+          </div>
+        ))}
+        {agencies.length === 0 && <div style={{ padding: 20, fontSize: 12.5, color: T.textFaint }}>No agencies yet.</div>}
+      </div>
+    </Card>
+  );
+}
+
+function AgencyManagementTab() {
+  const [agencies, setAgencies] = useState(null);
+  const load = useCallback(() => { supabase.from("agencies").select("*").order("created_at", { ascending: false }).then(({ data }) => setAgencies(data || [])); }, []);
+  useEffect(load, [load]);
+  if (!agencies) return <Spinner />;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", gap: 20, alignItems: "start" }}>
+      <AddAgencyForm onCreated={load} />
+      <CurrentAgenciesList agencies={agencies} onChanged={load} />
+    </div>
+  );
+}
+
+function SettingsView() {
+  const [tab, setTab] = useState("employees");
+  const tabs = [
+    { key: "employees", label: "Employee Management", icon: Users },
+    { key: "agencies", label: "Agency Management", icon: Building2 },
+    { key: "general", label: "General Config", icon: SettingsIcon },
+  ];
+  return (
     <div>
-      <SectionTitle action={<Button icon={UserPlus} onClick={() => setShowInvite(true)}>Invite Employee</Button>}>FAR Tech employees</SectionTitle>
-      {showInvite && <InviteEmployeeForm onClose={() => setShowInvite(false)} onInvited={load} />}
-      <Card style={{ overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr style={{ background: T.panel2 }}>{["Name", "Role", "Department", ""].map(h => <th key={h} style={{ padding: "10px 16px", fontSize: 11, color: T.textFaint, textAlign: "left" }}>{h}</th>)}</tr></thead>
-          <tbody>
-            {team.map(t => (
-              <tr key={t.id} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
-                <td style={{ padding: "11px 16px", display: "flex", alignItems: "center", gap: 10, fontSize: 12.8, color: T.text }}><Avatar name={t.full_name} size={28} />{t.full_name}</td>
-                <td style={{ padding: "11px 16px", fontSize: 12.3, color: T.textDim, textTransform: "capitalize" }}>{t.far_tech_role?.replace("_", " ")}</td>
-                <td style={{ padding: "11px 16px", fontSize: 12.3, color: T.textDim }}>{t.department || "—"}</td>
-                <td style={{ padding: "11px 16px" }}><MoreHorizontal size={15} color={T.textFaint} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {tabs.map(t => (
+          <div key={t.key} onClick={() => setTab(t.key)} style={{
+            display: "flex", alignItems: "center", gap: 7, padding: "9px 14px", borderRadius: 9, cursor: "pointer", fontSize: 12.8, fontWeight: 600,
+            background: tab === t.key ? `linear-gradient(135deg, ${T.iceMid}, ${T.blueDeep})` : T.panel2,
+            color: tab === t.key ? "#04121C" : T.textDim, border: `1px solid ${tab === t.key ? "transparent" : T.border}`,
+          }}><t.icon size={14} />{t.label}</div>
+        ))}
+      </div>
+      {tab === "employees" && <EmployeeManagementTab />}
+      {tab === "agencies" && <AgencyManagementTab />}
+      {tab === "general" && (
+        <Card style={{ padding: 22, maxWidth: 560 }}>
+          <div style={{ fontSize: 12.5, color: T.textFaint }}>Platform-wide settings (support email, default currency, SOP version) — wire to a `settings` key/value table when needed.</div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1401,7 +1595,7 @@ function AppShell({ profile, refreshProfile }) {
   else if (view === "meetings") content = <MeetingsView profile={profile} />;
   else if (view === "tickets") content = <TicketsView profile={profile} />;
   else if (view === "reports") content = <ReportsView profile={profile} />;
-  else if (view === "employees") content = <EmployeesView />;
+  else if (view === "employees") content = <EmployeeManagementTab />;
   else if (view === "activity") content = <ActivityLogView />;
   else if (view === "settings") content = <SettingsView />;
 
