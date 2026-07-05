@@ -259,6 +259,8 @@ function AgencyOnboardingFlow({ profile, onFinished }) {
     preferred_channel: profile.agencies?.preferred_channel || "email",
   });
   const [teamEmail, setTeamEmail] = useState("");
+  const [teamPassword, setTeamPassword] = useState(() => generatePassword());
+  const [teamSuccess, setTeamSuccess] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -268,11 +270,39 @@ function AgencyOnboardingFlow({ profile, onFinished }) {
   }, [profile.agency_id]);
   useEffect(load, [load]);
 
+  const ORDER = ["company_details", "upload_logo", "team_members", "billing_information", "preferred_communication", "development_process_guide", "acceptance_of_sop"];
+
+  useEffect(() => {
+    if (!steps) return;
+    const ordered = ORDER.map(key => steps.find(s => s.step_key === key)).filter(Boolean);
+    const firstIncomplete = ordered.findIndex(s => !s.is_complete);
+    if (firstIncomplete > 0) setActive(firstIncomplete);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps === null]);
+
   if (!steps) return <div style={{ height: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center" }}><Spinner label="Loading onboarding…" /></div>;
 
-  const order = ["company_details", "upload_logo", "team_members", "billing_information", "preferred_communication", "development_process_guide", "acceptance_of_sop"];
+  // Already done — don't re-force the wizard. Just confirm and point to Settings for edits.
+  if ((agency?.onboarding_progress ?? 0) >= 100) {
+    return (
+      <div style={{ height: "100vh", background: T.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: FONT_BODY, padding: 20 }}>
+        <style>{injectFonts}</style>
+        <CheckCircle2 size={44} color={T.green} style={{ marginBottom: 14 }} />
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 19, fontWeight: 700, color: T.text, marginBottom: 8 }}>You're all set up</div>
+        <div style={{ fontSize: 12.8, color: T.textFaint, maxWidth: 380, textAlign: "center", marginBottom: 24 }}>
+          {agency?.name} completed onboarding. Need to change contact details, billing info, or your logo? Do that anytime from Settings — no need to go through this again.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button onClick={onFinished}>Go to Dashboard</Button>
+        </div>
+      </div>
+    );
+  }
+
+  const order = ORDER;
   const ordered = order.map(key => steps.find(s => s.step_key === key)).filter(Boolean);
   const current = ordered[active];
+
 
   async function markComplete(stepKey, agencyPatch) {
     setBusy(true); setErr(null);
@@ -290,14 +320,15 @@ function AgencyOnboardingFlow({ profile, onFinished }) {
   }
 
   async function inviteTeammate() {
-    if (!teamEmail.trim()) return;
-    setBusy(true); setErr(null);
-    const { error } = await callEdgeFunction("invite-agency-user", {
-      email: teamEmail, fullName: teamEmail, agencyId: profile.agency_id, agencyRole: "manager",
+    if (!teamEmail.trim() || teamPassword.length < 8) return;
+    setBusy(true); setErr(null); setTeamSuccess(null);
+    const { error } = await callEdgeFunction("create-agency-user", {
+      email: teamEmail, fullName: teamEmail, agencyId: profile.agency_id, agencyRole: "manager", password: teamPassword,
     });
     setBusy(false);
     if (error) { setErr(error.message); return; }
-    setTeamEmail("");
+    setTeamSuccess(`Account created. Share these credentials: ${teamEmail} / ${teamPassword}`);
+    setTeamEmail(""); setTeamPassword(generatePassword());
     markComplete("team_members");
   }
 
@@ -344,18 +375,51 @@ function AgencyOnboardingFlow({ profile, onFinished }) {
 
         {current.step_key === "upload_logo" && (
           <>
-            <div style={{ border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: 22, textAlign: "center", color: T.textFaint, fontSize: 12.5, marginBottom: 16 }}>
-              <Upload size={18} style={{ marginBottom: 6 }} /><div>Logo upload wires to the `agency-logos` Storage bucket — for now, mark complete and add it later from Settings.</div>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/svg+xml,image/webp"
+              id="logo-upload-input"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setBusy(true); setErr(null);
+                try {
+                  const ext = file.name.split(".").pop();
+                  const path = `${profile.agency_id}/logo.${ext}`;
+                  const { error: uploadErr } = await supabase.storage.from("agency-logos").upload(path, file, { upsert: true });
+                  if (uploadErr) throw uploadErr;
+                  const { data: pub } = supabase.storage.from("agency-logos").getPublicUrl(path);
+                  await markComplete("upload_logo", { logo_url: pub.publicUrl });
+                } catch (uploadErr) {
+                  setErr(uploadErr.message);
+                  setBusy(false);
+                }
+              }}
+            />
+            <div
+              onClick={() => document.getElementById("logo-upload-input").click()}
+              style={{ border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: 22, textAlign: "center", color: T.textFaint, fontSize: 12.5, marginBottom: 16, cursor: "pointer" }}
+            >
+              <Upload size={18} style={{ marginBottom: 6 }} /><div>{busy ? "Uploading…" : "Click to choose a logo (PNG, JPG, SVG, or WebP)"}</div>
             </div>
-            <Button disabled={busy} onClick={() => markComplete("upload_logo")}>Continue</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => markComplete("upload_logo")}>Skip for now</Button>
           </>
         )}
 
         {current.step_key === "team_members" && (
           <>
+            {teamSuccess && <div style={{ padding: 12, borderRadius: 9, background: T.green + "14", border: `1px solid ${T.green}33`, color: T.green, fontSize: 12, marginBottom: 14, wordBreak: "break-word" }}>{teamSuccess}</div>}
             <Field label="Invite a teammate by email"><input style={inputStyle} type="email" value={teamEmail} onChange={e => setTeamEmail(e.target.value)} placeholder="colleague@youragency.com" /></Field>
+            <Field label="Set their password">
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}><PasswordInput value={teamPassword} onChange={e => setTeamPassword(e.target.value)} placeholder="At least 8 characters" /></div>
+                <Button variant="subtle" onClick={() => setTeamPassword(generatePassword())}>Generate</Button>
+              </div>
+              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 4 }}>Creates their login instantly — share these credentials with them yourself.</div>
+            </Field>
             <div style={{ display: "flex", gap: 10 }}>
-              <Button disabled={busy || !teamEmail} onClick={inviteTeammate}>Invite & continue</Button>
+              <Button disabled={busy || !teamEmail || teamPassword.length < 8} onClick={inviteTeammate}>Add teammate & continue</Button>
               <Button variant="ghost" disabled={busy} onClick={() => markComplete("team_members")}>Skip for now</Button>
             </div>
           </>
@@ -712,17 +776,51 @@ function ProjectsList({ profile, goProject, goNew }) {
 
 function NewProjectForm({ profile, onCreated }) {
   const devTypes = ["web", "mobile", "saas", "ai", "ui_ux", "shopify", "wordpress", "custom"];
+  const ACCEPTED = ".pdf,.doc,.docx,.png,.jpg,.jpeg,.fig,.zip,.txt,.xlsx,.csv";
   const [form, setForm] = useState({ name: "", client_name: "", industry: "", priority: "medium", development_type: "web", description: "", deadline: "" });
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [stagedFiles, setStagedFiles] = useState([]); // { name, path, size }
+  const [uploading, setUploading] = useState(false);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const stagingKey = useState(() => Math.random().toString(36).slice(2))[0];
+
+  async function handleFileSelect(e) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setUploading(true); setErr(null);
+    for (const file of files) {
+      if (file.size > 25 * 1024 * 1024) {
+        setErr(`${file.name} is over 25MB — please upload something smaller.`);
+        continue;
+      }
+      const path = `${profile.agency_id}/pending-${stagingKey}/${Date.now()}-${file.name}`;
+      const { error } = await supabase.storage.from("project-files").upload(path, file);
+      if (error) { setErr(error.message); continue; }
+      setStagedFiles(prev => [...prev, { name: file.name, path, size: file.size }]);
+    }
+    setUploading(false);
+    e.target.value = "";
+  }
+
+  function removeStaged(path) {
+    supabase.storage.from("project-files").remove([path]);
+    setStagedFiles(prev => prev.filter(f => f.path !== path));
+  }
 
   async function submit() {
     setBusy(true); setErr(null);
-    const { error } = await supabase.from("projects").insert({ ...form, agency_id: profile.agency_id, requested_by: profile.id, deadline: form.deadline || null });
+    const { data: project, error } = await supabase.from("projects").insert({ ...form, agency_id: profile.agency_id, requested_by: profile.id, deadline: form.deadline || null }).select().single();
+    if (error) { setErr(error.message); setBusy(false); return; }
+
+    if (stagedFiles.length > 0) {
+      const rows = stagedFiles.map(f => ({ project_id: project.id, file_url: f.path, file_name: f.name, uploaded_by: profile.id }));
+      const { error: filesErr } = await supabase.from("project_request_files").insert(rows);
+      if (filesErr) { setErr(`Project created, but attaching files failed: ${filesErr.message}`); setBusy(false); return; }
+    }
+
     setBusy(false);
-    if (error) { setErr(error.message); return; }
     setSubmitted(true);
     onCreated?.();
   }
@@ -733,7 +831,7 @@ function NewProjectForm({ profile, onCreated }) {
         <CheckCircle2 size={40} color={T.green} style={{ margin: "0 auto 14px" }} />
         <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 700, color: T.text }}>Project submitted</div>
         <div style={{ fontSize: 13, color: T.textDim, marginTop: 6 }}>It's now in FAR Tech's Operations queue awaiting assignment.</div>
-        <Button style={{ margin: "20px auto 0" }} onClick={() => { setSubmitted(false); setForm({ name: "", client_name: "", industry: "", priority: "medium", development_type: "web", description: "", deadline: "" }); }}>Submit another</Button>
+        <Button style={{ margin: "20px auto 0" }} onClick={() => { setSubmitted(false); setStagedFiles([]); setForm({ name: "", client_name: "", industry: "", priority: "medium", development_type: "web", description: "", deadline: "" }); }}>Submit another</Button>
       </Card>
     );
   }
@@ -760,10 +858,25 @@ function NewProjectForm({ profile, onCreated }) {
 
         <div style={{ fontSize: 12, fontWeight: 700, color: T.iceMid, textTransform: "uppercase", marginBottom: 14 }}>Requirements</div>
         <Field label="Description"><textarea rows={4} style={{ ...inputStyle, resize: "vertical" }} value={form.description} onChange={set("description")} placeholder="Describe scope, goals, and must-haves…" /></Field>
-        <Field label="Documents"><div style={{ border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: 22, textAlign: "center", color: T.textFaint, fontSize: 12.5 }}><Upload size={18} style={{ marginBottom: 6 }} /><div>File uploads wire up to Supabase Storage — see project_request_files table</div></div></Field>
+        <Field label="Documents (PDF, Word, images, Figma exports, ZIP — up to 25MB each)">
+          <input type="file" multiple accept={ACCEPTED} id="project-files-input" style={{ display: "none" }} onChange={handleFileSelect} />
+          <div onClick={() => document.getElementById("project-files-input").click()} style={{ border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: 22, textAlign: "center", color: T.textFaint, fontSize: 12.5, cursor: "pointer" }}>
+            <Upload size={18} style={{ marginBottom: 6 }} /><div>{uploading ? "Uploading…" : "Click to choose files"}</div>
+          </div>
+          {stagedFiles.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+              {stagedFiles.map(f => (
+                <div key={f.path} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", background: T.panel2, borderRadius: 8, fontSize: 12 }}>
+                  <span style={{ color: T.text, display: "flex", alignItems: "center", gap: 6 }}><FileText size={13} color={T.iceMid} /> {f.name}</span>
+                  <X size={13} color={T.textFaint} style={{ cursor: "pointer" }} onClick={() => removeStaged(f.path)} />
+                </div>
+              ))}
+            </div>
+          )}
+        </Field>
         <Field label="Deadline"><input type="date" style={inputStyle} value={form.deadline} onChange={set("deadline")} /></Field>
 
-        <Button icon={Send} onClick={submit} disabled={busy || !form.name || !form.client_name} style={{ marginTop: 6 }}>{busy ? "Submitting…" : "Submit to FAR Tech"}</Button>
+        <Button icon={Send} onClick={submit} disabled={busy || uploading || !form.name || !form.client_name} style={{ marginTop: 6 }}>{busy ? "Submitting…" : "Submit to FAR Tech"}</Button>
       </Card>
     </div>
   );

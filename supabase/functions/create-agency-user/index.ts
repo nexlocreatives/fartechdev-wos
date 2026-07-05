@@ -25,15 +25,21 @@ serve(async (req) => {
 
     const { data: callerProfile } = await supabaseAdmin
       .from("profiles")
-      .select("user_type, far_tech_role")
+      .select("user_type, far_tech_role, agency_id, agency_role")
       .eq("id", user.id)
       .single();
 
-    if (!callerProfile || callerProfile.user_type !== "far_tech" || !["super_admin", "admin"].includes(callerProfile.far_tech_role)) {
-      return new Response(JSON.stringify({ error: "Only Admins can create agency accounts" }), { status: 403, headers: corsHeaders });
+    const { email, fullName, agencyId, agencyRole, password } = await req.json();
+
+    const isFarTechAdmin = callerProfile?.user_type === "far_tech" && ["super_admin", "admin"].includes(callerProfile.far_tech_role);
+    const isAgencyOwnerOrManager = callerProfile?.user_type === "agency"
+      && callerProfile.agency_id === agencyId
+      && ["owner", "manager"].includes(callerProfile.agency_role);
+
+    if (!isFarTechAdmin && !isAgencyOwnerOrManager) {
+      return new Response(JSON.stringify({ error: "Not authorized to add a user to this agency" }), { status: 403, headers: corsHeaders });
     }
 
-    const { email, fullName, agencyId, agencyRole, password } = await req.json();
     const validRoles = ["owner", "manager", "staff"];
     if (!email || !password || !agencyId || !validRoles.includes(agencyRole || "owner")) {
       return new Response(JSON.stringify({ error: "email, password, and agencyId are required" }), { status: 400, headers: corsHeaders });
