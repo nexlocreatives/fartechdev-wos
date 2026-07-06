@@ -884,20 +884,33 @@ function NewProjectForm({ profile, onCreated }) {
 
 /* ---------------------------------- Assignment actions ---------------------------------- */
 
+const STATUS_FLOW = ["waiting_assignment", "planning", "development", "internal_qa", "agency_review", "approved", "released", "completed"];
+
 function AssignmentBar({ profile, project, onUpdated }) {
-  const [candidates, setCandidates] = useState([]);
+  const [pmCandidates, setPmCandidates] = useState([]);
+  const [tlCandidates, setTlCandidates] = useState([]);
+  const [devCandidates, setDevCandidates] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [devPickerMode, setDevPickerMode] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const stage = !project.project_manager_id ? "pm" : !project.team_lead_id ? "tl" : "dev";
-  const canAssignPM = isAdminLevel(profile) && stage === "pm";
-  const canAssignTL = profile.far_tech_role === "project_manager" && project.project_manager_id === profile.id && stage === "tl";
-  const canAssignDev = profile.far_tech_role === "team_lead" && project.team_lead_id === profile.id;
+  const canAssignPM = isAdminLevel(profile) && !project.project_manager_id;
+  const isProjectPM = profile.far_tech_role === "project_manager" && project.project_manager_id === profile.id;
+  const isProjectTL = profile.far_tech_role === "team_lead" && project.team_lead_id === profile.id;
+  const canAssignTL = isProjectPM && !project.team_lead_id;
+  const canAddDevDirect = isProjectPM || isProjectTL; // PM can skip TL entirely; TL always can
+  const canAdvanceStatus = isAdminLevel(profile) || isProjectPM || isProjectTL;
+
+  const loadTeam = useCallback(() => {
+    supabase.from("project_team_members").select("*, profiles(full_name)").eq("project_id", project.id).then(({ data }) => setTeamMembers(data || []));
+  }, [project.id]);
 
   useEffect(() => {
-    if (canAssignPM) supabase.from("profiles").select("id, full_name").eq("user_type", "far_tech").eq("far_tech_role", "project_manager").then(({ data }) => setCandidates(data || []));
-    else if (canAssignTL) supabase.from("profiles").select("id, full_name").eq("user_type", "far_tech").eq("far_tech_role", "team_lead").then(({ data }) => setCandidates(data || []));
-    else if (canAssignDev) supabase.from("profiles").select("id, full_name").eq("user_type", "far_tech").eq("far_tech_role", "developer").then(({ data }) => setCandidates(data || []));
-  }, [canAssignPM, canAssignTL, canAssignDev]);
+    if (canAssignPM) supabase.from("profiles").select("id, full_name").eq("user_type", "far_tech").eq("far_tech_role", "project_manager").then(({ data }) => setPmCandidates(data || []));
+    if (canAssignTL) supabase.from("profiles").select("id, full_name").eq("user_type", "far_tech").eq("far_tech_role", "team_lead").then(({ data }) => setTlCandidates(data || []));
+    if (canAddDevDirect) supabase.from("profiles").select("id, full_name").eq("user_type", "far_tech").eq("far_tech_role", "developer").then(({ data }) => setDevCandidates(data || []));
+    loadTeam();
+  }, [canAssignPM, canAssignTL, canAddDevDirect, loadTeam]);
 
   async function assignPmOrTl(field, profileId) {
     setBusy(true);
@@ -906,32 +919,85 @@ function AssignmentBar({ profile, project, onUpdated }) {
     if (!error) onUpdated();
   }
 
-  async function assignDev(profileId) {
+  async function addDev(profileId) {
+    if (!profileId) return;
     setBusy(true);
     const { error } = await supabase.from("project_team_members").insert({ project_id: project.id, profile_id: profileId, role_on_project: "Developer", assigned_by: profile.id });
+    setBusy(false);
+    if (!error) { loadTeam(); onUpdated(); }
+  }
+
+  async function removeDev(memberId) {
+    setBusy(true);
+    const { error } = await supabase.from("project_team_members").delete().eq("id", memberId);
+    setBusy(false);
+    if (!error) loadTeam();
+  }
+
+  async function advanceStatus() {
+    const idx = STATUS_FLOW.indexOf(project.status);
+    if (idx === -1 || idx === STATUS_FLOW.length - 1) return;
+    setBusy(true);
+    const { error } = await supabase.from("projects").update({ status: STATUS_FLOW[idx + 1] }).eq("id", project.id);
     setBusy(false);
     if (!error) onUpdated();
   }
 
-  if (!canAssignPM && !canAssignTL && !canAssignDev) return null;
+  const showAnything = canAssignPM || canAssignTL || canAddDevDirect || canAdvanceStatus;
+  if (!showAnything) return null;
+  const statusIdx = STATUS_FLOW.indexOf(project.status);
+  const nextStatus = statusIdx >= 0 ? STATUS_FLOW[statusIdx + 1] : null;
 
   return (
-    <Card style={{ padding: 16, marginBottom: 18, display: "flex", alignItems: "center", gap: 12 }}>
-      <div style={{ fontSize: 12.5, color: T.textDim, fontWeight: 600 }}>
-        {canAssignPM && "Assign a Project Manager to start this project:"}
-        {canAssignTL && "Assign a Team Lead:"}
-        {canAssignDev && "Add a Developer to the team:"}
-      </div>
-      <select style={{ ...inputStyle, width: "auto", flex: 1 }} disabled={busy} defaultValue=""
-        onChange={e => {
-          if (!e.target.value) return;
-          if (canAssignPM) assignPmOrTl("project_manager_id", e.target.value);
-          else if (canAssignTL) assignPmOrTl("team_lead_id", e.target.value);
-          else assignDev(e.target.value);
-        }}>
-        <option value="" disabled>Select person…</option>
-        {candidates.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-      </select>
+    <Card style={{ padding: 16, marginBottom: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+      {canAssignPM && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 12.5, color: T.textDim, fontWeight: 600, minWidth: 220 }}>Assign a Project Manager to start this project:</div>
+          <select style={{ ...inputStyle, width: "auto", flex: 1 }} disabled={busy} defaultValue="" onChange={e => e.target.value && assignPmOrTl("project_manager_id", e.target.value)}>
+            <option value="" disabled>Select person…</option>
+            {pmCandidates.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+          </select>
+        </div>
+      )}
+
+      {canAssignTL && !devPickerMode && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12.5, color: T.textDim, fontWeight: 600, minWidth: 220 }}>Assign a Team Lead, or add developers directly:</div>
+          <select style={{ ...inputStyle, width: "auto", flex: 1 }} disabled={busy} defaultValue="" onChange={e => e.target.value && assignPmOrTl("team_lead_id", e.target.value)}>
+            <option value="" disabled>Select a Team Lead…</option>
+            {tlCandidates.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+          </select>
+          <Button variant="subtle" onClick={() => setDevPickerMode(true)}>Skip — add developers myself</Button>
+        </div>
+      )}
+
+      {canAddDevDirect && (!canAssignTL || devPickerMode) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12.5, color: T.textDim, fontWeight: 600, minWidth: 220 }}>Add a developer to the team:</div>
+          <select style={{ ...inputStyle, width: "auto", flex: 1 }} disabled={busy} defaultValue="" onChange={e => { addDev(e.target.value); e.target.value = ""; }}>
+            <option value="" disabled>Select developer…</option>
+            {devCandidates.filter(c => !teamMembers.some(m => m.profile_id === c.id)).map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+          </select>
+        </div>
+      )}
+
+      {teamMembers.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {teamMembers.map(m => (
+            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", background: T.panel2, borderRadius: 8, fontSize: 12 }}>
+              <Avatar name={m.profiles?.full_name} size={18} /> {m.profiles?.full_name}
+              {(isProjectPM || isProjectTL || isAdminLevel(profile)) && <X size={12} color={T.textFaint} style={{ cursor: "pointer" }} onClick={() => removeDev(m.id)} />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {canAdvanceStatus && nextStatus && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, paddingTop: teamMembers.length || canAssignPM || canAssignTL ? 8 : 0, borderTop: teamMembers.length || canAssignPM || canAssignTL ? `1px solid ${T.borderSoft}` : "none" }}>
+          <div style={{ fontSize: 12.5, color: T.textDim }}>Currently: <b style={{ color: T.text }}>{STATUS_META[project.status]?.label}</b></div>
+          <Button variant="subtle" disabled={busy} onClick={advanceStatus}>Move to {STATUS_META[nextStatus]?.label} →</Button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -947,6 +1013,9 @@ function ProjectDetail({ project: initial, profile, onBack }) {
   const [draft, setDraft] = useState("");
   const [modules, setModules] = useState([]);
   const [files, setFiles] = useState([]);
+  const [err, setErr] = useState(null);
+  const [fileCategory, setFileCategory] = useState("other");
+  const [uploadingFile, setUploadingFile] = useState(false);
 
   const tabs = [
     { key: "discussion", label: "Discussion", icon: MessageSquare },
@@ -984,13 +1053,40 @@ function ProjectDetail({ project: initial, profile, onBack }) {
 
   useEffect(() => {
     if (tab !== "files") return;
-    supabase.from("files").select("*, profiles(full_name)").eq("project_id", project.id).then(({ data }) => setFiles(data || []));
+    loadFiles();
   }, [tab, project.id]);
+
+  function loadFiles() {
+    supabase.from("files").select("*, profiles(full_name)").eq("project_id", project.id).order("created_at", { ascending: false }).then(({ data }) => setFiles(data || []));
+  }
+
+  async function uploadProjectFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingFile(true); setErr(null);
+    const path = `${project.agency_id}/${project.id}/${Date.now()}-${file.name}`;
+    const { error: uploadErr } = await supabase.storage.from("project-files").upload(path, file);
+    if (uploadErr) { setErr(uploadErr.message); setUploadingFile(false); return; }
+    const { error: rowErr } = await supabase.from("files").insert({
+      project_id: project.id, category: fileCategory, name: file.name, storage_path: path, uploaded_by: profile.id,
+    });
+    setUploadingFile(false);
+    if (rowErr) { setErr(rowErr.message); return; }
+    loadFiles();
+    e.target.value = "";
+  }
 
   async function send() {
     if (!draft.trim() || !channel) return;
-    const { error } = await supabase.from("messages").insert({ project_id: project.id, channel, author_id: profile.id, body: draft });
-    if (!error) setDraft("");
+    const body = draft;
+    setDraft(""); // clear immediately so it feels responsive
+    const { data, error } = await supabase.from("messages").insert({ project_id: project.id, channel, author_id: profile.id, body }).select("*").single();
+    if (error) { setErr(error.message); setDraft(body); return; }
+    // Append locally right away — don't rely solely on the realtime subscription,
+    // since it only fires if the `messages` table is added to the supabase_realtime
+    // publication (see patch SQL). This guarantees the sender sees their own message
+    // instantly either way; the subscription still covers other viewers live.
+    setMsgs(prev => prev.some(m => m.id === data.id) ? prev : [...prev, { ...data, profiles: { full_name: profile.full_name } }]);
   }
 
   return (
@@ -1070,7 +1166,26 @@ function ProjectDetail({ project: initial, profile, onBack }) {
       )}
 
       {tab === "files" && (
-        <Card style={{ overflow: "hidden" }}>
+        <div>
+          <Card style={{ padding: 16, marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
+            <select style={{ ...inputStyle, width: "auto" }} value={fileCategory} onChange={e => setFileCategory(e.target.value)}>
+              <option value="contract">Contract</option>
+              <option value="requirement">Requirement</option>
+              <option value="design">Design</option>
+              <option value="source">Source</option>
+              <option value="apk">APK</option>
+              <option value="build">Build</option>
+              <option value="video">Video</option>
+              <option value="meeting_notes">Meeting Notes</option>
+              <option value="other">Other</option>
+            </select>
+            <input type="file" id="project-file-upload" style={{ display: "none" }} onChange={uploadProjectFile} />
+            <Button icon={Upload} disabled={uploadingFile} onClick={() => document.getElementById("project-file-upload").click()}>
+              {uploadingFile ? "Uploading…" : "Upload File"}
+            </Button>
+          </Card>
+          <ErrorBox message={err} />
+          <Card style={{ overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr style={{ background: T.panel2 }}>{["File", "Category", "Version", "Uploaded by", ""].map(h => <th key={h} style={{ padding: "10px 16px", fontSize: 11, color: T.textFaint, textAlign: "left" }}>{h}</th>)}</tr></thead>
             <tbody>
@@ -1086,7 +1201,8 @@ function ProjectDetail({ project: initial, profile, onBack }) {
               {files.length === 0 && <tr><td colSpan={5} style={{ padding: 20, color: T.textFaint, fontSize: 12.5 }}>No files uploaded yet.</td></tr>}
             </tbody>
           </table>
-        </Card>
+          </Card>
+        </div>
       )}
 
       {tab === "approvals" && <ApprovalsTab project={project} profile={profile} />}
@@ -1098,21 +1214,49 @@ function ProjectDetail({ project: initial, profile, onBack }) {
 
 function ApprovalsTab({ project, profile }) {
   const [approvals, setApprovals] = useState([]);
-  useEffect(() => { supabase.from("approvals").select("*").eq("project_id", project.id).then(({ data }) => setApprovals(data || [])); }, [project.id]);
+  const [comments, setComments] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canSubmit = isAdminLevel(profile) || profile.far_tech_role === "project_manager" || profile.far_tech_role === "team_lead";
+
+  const load = useCallback(() => {
+    supabase.from("approvals").select("*").eq("project_id", project.id).order("submitted_at", { ascending: false }).then(({ data }) => setApprovals(data || []));
+  }, [project.id]);
+  useEffect(load, [load]);
 
   async function decide(id, decision) {
     const { error } = await supabase.from("approvals").update({ decision, reviewed_by: profile.id, decided_at: new Date().toISOString() }).eq("id", id);
     if (!error) setApprovals(approvals.map(a => a.id === id ? { ...a, decision } : a));
   }
 
+  async function submitForApproval() {
+    setBusy(true);
+    const { error } = await supabase.from("approvals").insert({
+      project_id: project.id, stage: "agency_review", decision: "pending", submitted_by: profile.id, comments: comments || null,
+    });
+    setBusy(false);
+    if (!error) { setComments(""); load(); }
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 12, color: T.textFaint, marginBottom: 4 }}>
+        This is where work gets signed off. FAR Tech submits a stage for review here; the agency approves it or requests changes — each decision is timestamped and kept as a record.
+      </div>
+      {canSubmit && (
+        <Card style={{ padding: 16, marginBottom: 6 }}>
+          <div style={{ fontSize: 12.8, fontWeight: 600, color: T.text, marginBottom: 10 }}>Submit the current stage for the agency's review</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <input style={{ ...inputStyle, flex: 1 }} value={comments} onChange={e => setComments(e.target.value)} placeholder="Optional note for the agency (what's ready to review)" />
+            <Button disabled={busy} onClick={submitForApproval}>{busy ? "Submitting…" : "Submit for Approval"}</Button>
+          </div>
+        </Card>
+      )}
       {approvals.length === 0 && <Card style={{ padding: 24, textAlign: "center", color: T.textFaint, fontSize: 12.5 }}>No approvals submitted yet.</Card>}
       {approvals.map(a => (
         <Card key={a.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: T.text, textTransform: "capitalize" }}>{a.stage.replace("_", " ")}</div>
-            <div style={{ fontSize: 11.5, color: T.textFaint }}>Submitted {new Date(a.submitted_at).toLocaleDateString()}</div>
+            <div style={{ fontSize: 11.5, color: T.textFaint }}>Submitted {new Date(a.submitted_at).toLocaleDateString()}{a.comments ? ` · ${a.comments}` : ""}</div>
           </div>
           {profile.user_type === "agency" && a.decision === "pending" ? (
             <div style={{ display: "flex", gap: 8 }}>
@@ -1289,21 +1433,124 @@ function TicketsView({ profile }) {
   );
 }
 
+const MEETING_STATUS_COLOR = { pending: T.amber, approved: T.green, rejected: T.red };
+
+function ScheduleMeetingForm({ profile, onClose, onCreated }) {
+  const [form, setForm] = useState({ title: "", meeting_date: "", meeting_time: "", agenda: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  async function submit() {
+    setBusy(true); setErr(null);
+    const { error } = await supabase.from("meetings").insert({
+      agency_id: profile.agency_id,
+      title: form.title || "Meeting with FAR Tech",
+      agenda: form.agenda,
+      meeting_date: form.meeting_date,
+      meeting_time: form.meeting_time,
+      created_by: profile.id,
+      requested_by: profile.id,
+      request_status: "pending",
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    onCreated(); onClose();
+  }
+
+  return (
+    <Card style={{ padding: 18, marginBottom: 16 }}>
+      <SectionTitle action={<X size={17} color={T.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />}>Request a meeting with FAR Tech</SectionTitle>
+      <div style={{ fontSize: 12, color: T.textFaint, marginBottom: 14 }}>Submit a date and time — a FAR Tech admin will approve it and share the meeting link, or let you know if it needs to move.</div>
+      <ErrorBox message={err} />
+      <Field label="What's it about?"><input style={inputStyle} value={form.title} onChange={set("title")} placeholder="e.g. Sprint review, scope question…" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Field label="Date"><input type="date" style={inputStyle} value={form.meeting_date} onChange={set("meeting_date")} /></Field>
+        <Field label="Time"><input type="time" style={inputStyle} value={form.meeting_time} onChange={set("meeting_time")} /></Field>
+      </div>
+      <Field label="Agenda (optional)"><textarea rows={2} style={{ ...inputStyle, resize: "vertical" }} value={form.agenda} onChange={set("agenda")} /></Field>
+      <Button icon={Send} disabled={busy || !form.meeting_date || !form.meeting_time} onClick={submit}>{busy ? "Submitting…" : "Request meeting"}</Button>
+    </Card>
+  );
+}
+
+function MeetingDecisionRow({ meeting, onDecided }) {
+  const [link, setLink] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState(null); // 'approve' | 'reject'
+
+  async function decide(status) {
+    setBusy(true);
+    const { error } = await supabase.from("meetings").update({
+      request_status: status,
+      meeting_link: status === "approved" ? link : null,
+      decision_notes: notes || null,
+      decided_at: new Date().toISOString(),
+    }).eq("id", meeting.id);
+    setBusy(false);
+    if (!error) onDecided();
+  }
+
+  if (mode === "approve") {
+    return (
+      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <input style={inputStyle} value={link} onChange={e => setLink(e.target.value)} placeholder="Google Meet / Zoom link" />
+        <input style={inputStyle} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional note" />
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button disabled={busy || !link} onClick={() => decide("approved")}>Confirm approval</Button>
+          <Button variant="ghost" onClick={() => setMode(null)}>Cancel</Button>
+        </div>
+      </div>
+    );
+  }
+  if (mode === "reject") {
+    return (
+      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <input style={inputStyle} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Reason for declining" />
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="danger" disabled={busy || !notes} onClick={() => decide("rejected")}>Confirm rejection</Button>
+          <Button variant="ghost" onClick={() => setMode(null)}>Cancel</Button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+      <Button onClick={() => setMode("approve")}>Approve</Button>
+      <Button variant="danger" onClick={() => setMode("reject")}>Reject</Button>
+    </div>
+  );
+}
+
 function MeetingsView({ profile }) {
   const [meetings, setMeetings] = useState(null);
-  useEffect(() => { supabase.from("meetings").select("*, agencies(name)").order("meeting_date", { ascending: true }).then(({ data }) => setMeetings(data || [])); }, []);
+  const [showNew, setShowNew] = useState(false);
+  const load = useCallback(() => {
+    supabase.from("meetings").select("*, agencies(name)").order("meeting_date", { ascending: true }).then(({ data }) => setMeetings(data || []));
+  }, []);
+  useEffect(load, [load]);
   if (!meetings) return <Spinner />;
+
   return (
     <div>
-      <SectionTitle action={<Button icon={Plus}>Schedule Meeting</Button>}>Meetings</SectionTitle>
+      <SectionTitle action={profile.user_type === "agency" && <Button icon={Plus} onClick={() => setShowNew(!showNew)}>Schedule Meeting</Button>}>Meetings</SectionTitle>
+      {showNew && <ScheduleMeetingForm profile={profile} onClose={() => setShowNew(false)} onCreated={load} />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {meetings.map(m => (
           <Card key={m.id} style={{ padding: 18 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
               <div style={{ width: 36, height: 36, borderRadius: 9, background: T.iceMid + "1A", display: "flex", alignItems: "center", justifyContent: "center" }}><Video size={17} color={T.iceMid} /></div>
-              <div><div style={{ fontSize: 13.3, fontWeight: 700, color: T.text }}>{m.title}</div><div style={{ fontSize: 11.5, color: T.textFaint }}>{m.agencies?.name}</div></div>
+              <div style={{ flex: 1 }}><div style={{ fontSize: 13.3, fontWeight: 700, color: T.text }}>{m.title}</div><div style={{ fontSize: 11.5, color: T.textFaint }}>{m.agencies?.name}</div></div>
+              <Pill color={MEETING_STATUS_COLOR[m.request_status || "approved"]}>{m.request_status || "approved"}</Pill>
             </div>
-            <div style={{ fontSize: 12.3, color: T.textDim }}>{m.meeting_date} · {m.meeting_time} · {m.platform.replace("_", " ")}</div>
+            <div style={{ fontSize: 12.3, color: T.textDim }}>{m.meeting_date} · {m.meeting_time}</div>
+            {m.agenda && <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 6 }}>{m.agenda}</div>}
+            {m.request_status === "approved" && m.meeting_link && (
+              <a href={m.meeting_link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: T.iceMid, marginTop: 8, display: "inline-block" }}>Join link →</a>
+            )}
+            {m.decision_notes && <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 6, fontStyle: "italic" }}>"{m.decision_notes}"</div>}
+            {isAdminLevel(profile) && (m.request_status === "pending" || !m.request_status) && <MeetingDecisionRow meeting={m} onDecided={load} />}
           </Card>
         ))}
         {meetings.length === 0 && <div style={{ fontSize: 12.5, color: T.textFaint }}>No meetings scheduled.</div>}
@@ -1571,19 +1818,66 @@ function SettingsView() {
   );
 }
 
+function InviteTeamMemberForm({ profile, onClose, onInvited }) {
+  const [form, setForm] = useState({ email: "", fullName: "", agencyRole: "staff", password: generatePassword() });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [success, setSuccess] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  async function submit() {
+    setBusy(true); setErr(null); setSuccess(null);
+    const { error } = await callEdgeFunction("create-agency-user", {
+      email: form.email, fullName: form.fullName, agencyId: profile.agency_id, agencyRole: form.agencyRole, password: form.password,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setSuccess(`Account created. Share these credentials: ${form.email} / ${form.password}`);
+    onInvited();
+  }
+
+  return (
+    <Card style={{ padding: 18, marginBottom: 16 }}>
+      <SectionTitle action={<X size={17} color={T.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />}>Invite a team member</SectionTitle>
+      <ErrorBox message={err} />
+      {success && <div style={{ padding: 12, borderRadius: 9, background: T.green + "14", border: `1px solid ${T.green}33`, color: T.green, fontSize: 12, marginBottom: 14, wordBreak: "break-word" }}>{success}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={set("fullName")} /></Field>
+        <Field label="Email"><input style={inputStyle} type="email" value={form.email} onChange={set("email")} /></Field>
+        <Field label="Role">
+          <select style={inputStyle} value={form.agencyRole} onChange={set("agencyRole")}>
+            <option value="manager">Manager</option>
+            <option value="staff">Staff</option>
+          </select>
+        </Field>
+        <Field label="Password">
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1 }}><PasswordInput value={form.password} onChange={set("password")} /></div>
+            <Button variant="subtle" onClick={() => setForm({ ...form, password: generatePassword() })}>Generate</Button>
+          </div>
+        </Field>
+      </div>
+      <Button icon={UserPlus} onClick={submit} disabled={busy || !form.email || !form.fullName || form.password.length < 8}>{busy ? "Creating…" : "Add teammate"}</Button>
+    </Card>
+  );
+}
+
 function TeamView({ profile }) {
   const [members, setMembers] = useState(null);
-  useEffect(() => {
+  const [showInvite, setShowInvite] = useState(false);
+  const load = useCallback(() => {
     if (profile.user_type === "agency") {
       supabase.from("profiles").select("*").eq("agency_id", profile.agency_id).then(({ data }) => setMembers(data || []));
     } else {
       supabase.from("project_team_members").select("profiles(*)").then(({ data }) => setMembers((data || []).map(d => d.profiles)));
     }
   }, [profile]);
+  useEffect(load, [load]);
   if (!members) return <Spinner />;
   return (
     <div>
-      <SectionTitle action={profile.user_type === "agency" && <Button icon={UserPlus}>Invite Member</Button>}>Team</SectionTitle>
+      <SectionTitle action={profile.user_type === "agency" && <Button icon={UserPlus} onClick={() => setShowInvite(!showInvite)}>Invite Member</Button>}>Team</SectionTitle>
+      {showInvite && <InviteTeamMemberForm profile={profile} onClose={() => setShowInvite(false)} onInvited={load} />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {members.map(m => (
           <Card key={m.id} style={{ padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
